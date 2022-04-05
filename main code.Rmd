@@ -1,0 +1,289 @@
+---
+title: "Heart Disease Prediction"
+author: "Wun-Syuan Wu, Eric Chagon, Meng-Tien Tsai, Sanskruti More"
+date: "12/10/2021"
+output: html_document
+---
+```{r}
+require(ggplot2)
+require(class)
+require(caret)
+require(MASS)
+```
+```{r}
+heart=read.csv("heart.csv")
+
+set.seed(999)
+idx <- sample(1:nrow(heart), nrow(heart)*.9, replace = FALSE)
+heart_train <- heart[idx, ]
+heart_test <- heart[-idx, ]
+
+```
+########## Model Selection ########## 
+```{r}
+full.model = glm_fit <- glm(HeartDisease~., data = heart_train, family="binomial")
+null.model = glm_fit <- glm(HeartDisease~1, data = heart_train, family="binomial")
+
+n = nrow(heart_train)
+```
+```{r}
+## Bidirectional Stepwise
+# BIC as criteria
+step.fit = stepAIC(null.model, scope = list(upper = full.model, lower = ~1), trace=F, direction="both", k=log(n))
+
+step.fit.summary <- step.fit$anova
+step.fit.summary
+
+# AIC as criteria
+step.fit2 = stepAIC(null.model, scope = list(upper = full.model, lower = ~1), trace=F, direction="both", k=2)
+
+step.fit.summary2 <- step.fit2$anova
+step.fit.summary2
+
+```
+```{r}
+## Best Possible Subset
+require(bestglm)
+
+qwer = heart_train
+#can only take in numeric and factors
+
+qwer$Age = as.numeric(qwer$Age)
+qwer$Sex = as.factor(qwer$Sex)
+qwer$ChestPainType = as.factor(qwer$ChestPainType)
+qwer$RestingBP = as.numeric(qwer$RestingBP)
+qwer$Cholesterol = as.numeric(qwer$Cholesterol)
+qwer$FastingBS = as.numeric(qwer$FastingBS)
+qwer$RestingECG = as.factor(qwer$RestingECG)
+qwer$MaxHR = as.numeric(qwer$MaxHR)
+qwer$ExerciseAngina = as.factor(qwer$ExerciseAngina)
+qwer$Oldpeak = as.numeric(qwer$Oldpeak)
+qwer$ST_Slope = as.factor(qwer$ST_Slope)
+qwer$HeartDisease = as.numeric(qwer$HeartDisease)
+
+
+test = bestglm(qwer, family = binomial, IC = "BIC")
+test$BestModel
+# This is the same model as stepBIC
+```
+
+########## Model Validation ########## 
+```{r}
+k_fold <- function(k, glm_formula, data, seed){
+  set.seed(seed)
+  size_of_test = ceiling(nrow(data) / k) #size of each testing dataset
+  test_indexes = matrix(nrow=k-1, ncol=size_of_test) #the indexes that will make up the test dataset for each fold
+  total_rows = c(1:nrow(heart))
+  for(i in c(1:k)){
+    if(length(total_rows) < size_of_test){
+      leftovers = total_rows #when the dataset isnt divisible by size_of_test there will be leftovers
+    }
+    else{
+      idx = sample(total_rows, size_of_test, replace = FALSE)
+      total_rows = setdiff(total_rows, idx)
+      test_indexes[i,] = idx 
+    }
+  }
+  accuracy <- c()
+  precision <- c()
+  recall <- c()
+  f_measure <- c()
+  for(i in c(1:k)){
+    if (i == k){ #after all the full folds are done we have to run the leftovers as test data so every observation is able to be part of the test data
+      test_data = data[leftovers, ]
+      train_data = data[-leftovers,]
+    }
+    else{
+      test_data = data[test_indexes[i,], ]
+      train_data = data[-test_indexes[i,],]
+    }
+    
+    glm_fit <- glm(as.formula(glm_formula), data = train_data, family="binomial") #fit model with formula that was passed in 
+    response_v <- as.character(attributes(glm_fit$terms)$variables[[2]])
+    
+    predicted <- predict(glm_fit, test_data, type="response") #predictions of the model on the test data this fold
+    confusion <- table(ifelse(predicted > 0.5, 1, 0),
+                       test_data[[response_v]],
+                       dnn = c("Predicted","True"))
+    #performance metrics for the current fold
+    accuracy[i] <- sum(diag(confusion)) / sum(confusion)
+    precision[i] <- confusion[2,2] / sum(confusion[2,])
+    recall[i] <- confusion[2,2] / sum(confusion[,2])
+    f_measure[i] <- (2 *(precision[i] * recall[i])) / (precision[i] + recall[i])
+  }
+  result <- setNames(c(mean(accuracy), mean(precision), mean(recall), mean(f_measure)), c("Accuracy", "Precision", "Recall", "F-measure"))
+  return(result)
+  
+}
+```
+```{r}
+step.BIC.formula = HeartDisease ~ ST_Slope + ChestPainType + Sex + FastingBS + ExerciseAngina + 
+  Cholesterol + Oldpeak
+
+step.AIC.formula = HeartDisease ~ ST_Slope + ChestPainType + Sex + FastingBS + ExerciseAngina + 
+  Cholesterol + Oldpeak + Age
+
+#best.subset.formula = HeartDisease ~ ST_Slope + ChestPainType + Sex + FastingBS + ExerciseAngina +  Cholesterol + Oldpeak 
+```
+```{r}
+# k-fold cross validation on the models
+folds = 10
+
+step.bic.kfold = k_fold(folds, step.BIC.formula, heart, 12082021)
+step.aic.kfold = k_fold(folds, step.AIC.formula, heart, 12082021)
+full.model.kfold = k_fold(folds, HeartDisease~., heart, 12082021)
+
+valid.df = data.frame(Model = c("Full Model", "BIC Model", "AIC Model"),
+                      "Num_predictors(p)" = c(11, 7, 8),
+                      Accuracy = c(full.model.kfold[1], step.bic.kfold[1], step.aic.kfold[1]),
+                      Precision = c(full.model.kfold[2], step.bic.kfold[2], step.aic.kfold[2]),
+                      Recall = c(full.model.kfold[3], step.bic.kfold[3], step.aic.kfold[3]), "F1_Score" =  c(full.model.kfold[4], step.bic.kfold[4], step.aic.kfold[4]))
+```
+```{r}
+require(kableExtra)
+
+valid.df %>%
+  kbl() %>%
+  kable_styling()
+
+final.model = glm(as.formula(step.BIC.formula), data = heart, family = "binomial")
+summary(final.model)
+
+predicted.data <- data.frame(prob.of.HeartDisease = final.model$fitted.values, HeartDisease = heart$HeartDisease)
+
+predicted.data <- predicted.data[order(predicted.data$prob.of.HeartDisease, decreasing = FALSE), ]
+
+predicted.data$index <- c(1:nrow(heart))
+
+final.pred = ggplot(data=predicted.data, aes(x=index, y=prob.of.HeartDisease)) + geom_point(aes(color=HeartDisease), alpha = 1, shape = 4, stroke = 2) + xlab("Index") + ylab("Predicted Probability of having Heart Disease") + labs(title = "Final Model Predictions")
+
+ggsave("Final Model Predictions.pdf", final.pred)
+```
+
+########## EDA and Data Visualization ########## 
+```{r}
+require(ggplot2)
+library(GGally)
+library(ggpubr)
+library(tidyverse)
+
+#prepare the data
+df <- read.csv('heart.csv')
+df[sapply(df, is.character )] <- lapply(df[sapply(df, is.character)], as.factor)
+df$FastingBS <- as.factor(df$FastingBS)
+df$HeartDisease <- ifelse(df$HeartDisease == 1, "Y", "N")
+df$HeartDisease <- as.factor(df$HeartDisease)
+
+#data overview
+summary(df)
+prop.table(table(df[(df$Age >= 55),]$HeartDisease))
+
+#scatter plot matrix (Fig 1)
+num_df <- df[, c(1,4,5,8,10)]
+ggpairs(num_df, legend = 1, aes(color = df$HeartDisease, alpha = 0.4)) +
+  theme(legend.position = "bottom") +
+  labs(fill = "HeartDisease")
+
+#stacked scatter plots
+bp_ct <- ggplot(df, aes(ChestPainType, fill = HeartDisease)) + geom_bar() +  labs(title = "Count by Chest Pain ", x = "Chest Pain Type", y = "Count")
+bp_s <- ggplot(df, aes(Sex, fill = HeartDisease)) + geom_bar() +  labs(title = "Count by Sex ", x = "Sex", y = "Count")
+bp_f <- ggplot(df, aes(FastingBS, fill = HeartDisease)) + geom_bar() +  labs(title = "Count by Fasting Blood Sugar", x = "FastingBS", y = "Count")
+bp_r <- ggplot(df, aes(RestingECG, fill = HeartDisease)) + geom_bar() +  labs(title = "Count by Resting ECG", x = "RestingECG", y = "Count")
+bp_e <- ggplot(df, aes(ExerciseAngina, fill = HeartDisease)) + 
+geom_bar() +  labs(title = "Count by Exercise Angina", x = "ExerciseAngina", y = "Count")
+bp_s <- ggplot(df, aes(ST_Slope, fill = HeartDisease)) + geom_bar() +  labs(title = "Count by ST_Slope", x = "ST_Slope", y = "Count")
+ggarrange(bp_ct, bp_s, bp_f, bp_r, bp_e, bp_s, 
+             ncol = 2, nrow = 3, labels = c('A','B', 'C', 'D', 'E', 'F'))
+
+#side-by-side boxplot for cholesterol
+p3 <- ggplot(data = heart, mapping = aes(x = HeartDisease, y = heart[,quant_name_index[3]], fill = HeartDisease)) +
+    geom_boxplot (alpha = 0.4, outlier.color = "slateblue", outlier.size = 4 ) +
+    theme (legend.position = "none" ) 
+```
+
+```{r}
+require(kableExtra)
+
+valid.df %>%
+  kbl() %>%
+  kable_styling()
+
+final.model = glm(as.formula(step.BIC.formula), data = heart, family = "binomial")
+summary(final.model)
+
+predicted.data <- data.frame(prob.of.HeartDisease = final.model$fitted.values, HeartDisease = heart$HeartDisease)
+
+predicted.data <- predicted.data[order(predicted.data$prob.of.HeartDisease, decreasing = FALSE), ]
+
+predicted.data$index <- c(1:nrow(heart))
+
+final.pred = ggplot(data=predicted.data, aes(x=index, y=prob.of.HeartDisease)) + geom_point(aes(color=HeartDisease), alpha = 1, shape = 4, stroke = 2) + xlab("Index") + ylab("Predicted Probability of having Heart Disease") + labs(title = "Final Model Predictions")
+
+ggsave("Final Model Predictions.pdf", final.pred)
+
+
+########## EDA and Data Visualization ########## 
+
+require(ggplot2)
+library(GGally)
+library(ggpubr)
+library(tidyverse)
+
+#prepare the data
+df <- read.csv('heart.csv')
+df[sapply(df, is.character )] <- lapply(df[sapply(df, is.character)], as.factor)
+df$FastingBS <- as.factor(df$FastingBS)
+df$HeartDisease <- ifelse(df$HeartDisease == 1, "Y", "N")
+df$HeartDisease <- as.factor(df$HeartDisease)
+
+#data overview
+summary(df)
+prop.table(table(df[(df$Age >= 55),]$HeartDisease))
+
+#scatter plot matrix (Fig 1)
+num_df <- df[, c(1,4,5,8,10)]
+ggpairs(num_df, legend = 1, aes(color = df$HeartDisease, alpha = 0.4)) +
+  theme(legend.position = "bottom") +
+  labs(fill = "HeartDisease")
+
+#stacked scatter plots
+bp_ct <- ggplot(df, aes(ChestPainType, fill = HeartDisease)) + geom_bar() +  labs(title = "Count by Chest Pain ", x = "Chest Pain Type", y = "Count")
+bp_s <- ggplot(df, aes(Sex, fill = HeartDisease)) + geom_bar() +  labs(title = "Count by Sex ", x = "Sex", y = "Count")
+bp_f <- ggplot(df, aes(FastingBS, fill = HeartDisease)) + geom_bar() +  labs(title = "Count by Fasting Blood Sugar", x = "FastingBS", y = "Count")
+bp_r <- ggplot(df, aes(RestingECG, fill = HeartDisease)) + geom_bar() +  labs(title = "Count by Resting ECG", x = "RestingECG", y = "Count")
+bp_e <- ggplot(df, aes(ExerciseAngina, fill = HeartDisease)) + 
+geom_bar() +  labs(title = "Count by Exercise Angina", x = "ExerciseAngina", y = "Count")
+bp_s <- ggplot(df, aes(ST_Slope, fill = HeartDisease)) + geom_bar() +  labs(title = "Count by ST_Slope", x = "ST_Slope", y = "Count")
+ggarrange(bp_ct, bp_s, bp_f, bp_r, bp_e, bp_s, 
+             ncol = 2, nrow = 3, labels = c('A','B', 'C', 'D', 'E', 'F'))
+
+#side-by-side boxplot for cholesterol
+p3 <- ggplot(data = heart, mapping = aes(x = HeartDisease, y = heart[,quant_name_index[3]], fill = HeartDisease)) +
+    geom_boxplot (alpha = 0.4, outlier.color = "slateblue", outlier.size = 4 ) +
+    theme (legend.position = "none" ) +
+    scale_x_discrete (labels = paste(c("Normal", "HeartDisease"), "\n(N=", table(heart[,quant_name_index[3]]), ")", sep=" ") ) +
+    ggtitle(paste(quant_heart_name[3]), ": side-by-side box plot") +
+    xlab("HeartDisease") + ylab(quant_heart_name[3])
+
+p6 <- ggplot(data = heart_rm, mapping = aes(x = HeartDisease, y = heart_rm[,quant_name_index[3]], fill = HeartDisease)) +
+    geom_boxplot (alpha = 0.4, 
+                  outlier.color = "slateblue", 
+                  outlier.size = 4 ) +
+    scale_x_discrete (labels = paste(c("Normal", "HeartDisease"), "\n(N=", table(heart_rm[,quant_name_index[3]]), ")", sep=" ")) +
+    ylim(0,600) +
+    geom_hline(yintercept = mean(heart_rm$Cholesterol[which(heart_rm$HeartDisease == 1)]),
+               linetype = "dashed", alpha = 0.5) +
+    ggtitle(paste(quant_heart_name[3]), ": side-by-side box plot") +
+    xlab("HeartDisease") + ylab(quant_heart_name[3]) +
+    theme (legend.position = "none" ) 
+grid.arrange(p3, p6, nrow = 1, ncol = 2)
+
+##Frequency plot
+heart$HeartDisease <- as.factor(heart$HeartDisease)
+for(i in quant_name_index){
+    label <- paste(colnames(heart)[i], ":", "frequency plot")
+    p <- ggplot(data = heart, mapping = aes(x = heart[,i], color = HeartDisease))+
+    geom_freqpoly()
+    print(p + ggtitle(label = label) + xlab(colnames(heart)[i]) + ylab("Count"))
+}
+```
